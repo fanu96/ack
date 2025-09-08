@@ -1,57 +1,87 @@
 name: Archive External Kernel
 
-# This allows you to run the workflow manually from the Actions tab
 on:
   workflow_dispatch:
 
 jobs:
   archive-and-release:
     runs-on: ubuntu-latest
-    
-    # Permissions are required to create a release and upload assets
+    timeout-minutes: 350
     permissions:
       contents: write
 
     steps:
+      # --- FIX 1: CHECK OUT YOUR REPOSITORY ---
+      # This step is crucial. It puts the runner in the context of your
+      # repository, which is required by the 'gh release create' command.
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
       - name: Install Dependencies
         run: |
-          # Ensure Git and compression tools are available
           sudo apt-get update
           sudo apt-get install -y git xz-utils
 
       - name: Clone Android Common Kernel (4.14 Branch)
         run: |
           echo "Starting full clone of the android-4.14-stable branch..."
-          # Clone the specific branch with its full history. This is necessary for upstreaming.
-          # This step will take a long time (potentially 1-2 hours).
-          git clone --branch=deprecated/android-4.14-stable https://android.googlesource.com/kernel/common/ android-kernel
+          git clone --progress --branch=deprecated/android-4.14-stable https://android.googlesource.com/kernel/common/ android-kernel
           
       - name: Fetch All Tags
         run: |
-          echo "Fetching all tags..."
-          # Change directory into the kernel source and fetch all tags
           cd android-kernel
           git fetch --tags
           cd ..
 
+      - name: Check Disk Usage After Clone
+        run: du -sh android-kernel
+
       - name: Compress Kernel Source
         run: |
           echo "Starting compression..."
-          # Use tar with xz for high-level compression (-9e for extreme, T0 for all CPU cores)
-          # This will also take a significant amount of time.
-          tar -I 'xz -9e -T0' -cf android-kernel-4.14.tar.xz android-kernel
+          tar -I 'xz -7 -T0' -cvf android-kernel-4.14.tar.xz android-kernel
 
-      - name: Create GitHub Release and Upload Archive
+      - name: Check Final Archive Size
+        run: ls -lh android-kernel-4.14.tar.xz
+
+      # --- FIX 2: SPLIT THE LARGE ARCHIVE ---
+      - name: Split Archive into Chunks
+        run: |
+          echo "Splitting the 6.3GB archive into smaller parts..."
+          # Split into 1.9GB chunks to stay safely under the 2GB limit.
+          split -b 1900M android-kernel-4.14.tar.xz "android-kernel-4.14.tar.xz.part-" -a 2 -d
+
+      - name: Create GitHub Release and Upload Chunks
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          # Generate a unique tag for the release based on the current date and time
-          TAG=$(date +'%Y-%m-%d-%H-%M-%S')
+          TAG=$(date +'%Y-%m-%d-%H%M')
+          
+          # --- FIX 2 (Continued): UPDATE RELEASE NOTES WITH INSTRUCTIONS ---
+          RELEASE_NOTES="Automated archive of the Android Common Kernel deprecated/android-4.14-stable branch.
+
+          **IMPORTANT:** This archive was split into multiple parts due to GitHub's file size limit. To reassemble the archive, download all \`.part-*\` files into the same directory and run the following command in your terminal:
+
+          \`\`\`bash
+          cat android-kernel-4.14.tar.xz.part-* > android-kernel-4.14.tar.xz
+          \`\`\`
+          "
           
           echo "Creating release with tag: $TAG"
           gh release create "$TAG" \
               --title "Android Kernel 4.14 Archive ($TAG)" \
-              --notes "Automated archive of the Android Common Kernel deprecated/android-4.14-stable branch with all tags. Compressed with tar.xz."
+              --notes "$RELEASE_NOTES"
 
-          echo "Uploading archive to the release..."
-          gh release upload "$TAG" android-kernel-4.14.tar.xz
+          echo "Uploading archive parts to the release..."
+          # --- FIX 2 (Continued): UPLOAD ALL THE SPLIT FILES ---
+          for file in android-kernel-4.14.tar.xz.part-*; do
+            echo "Uploading $file..."
+            gh release upload "$TAG" "$file"
+          done
+          
+      - name: Clean up runner disk space
+        if: always()
+        run: |
+          echo "Cleaning up large files..."
+          rm -rf android-kernel
+          rm -f android-kernel-4.14.tar.xz*
