@@ -1,0 +1,75 @@
+name: Archive External Kernel
+
+# This allows you to run the workflow manually from the Actions tab
+on:
+  workflow_dispatch:
+
+jobs:
+  archive-and-release:
+    runs-on: ubuntu-latest
+    
+    # Set a timeout just under the 6-hour maximum to avoid an abrupt kill
+    timeout-minutes: 350
+
+    # Permissions are required to create a release and upload assets
+    permissions:
+      contents: write
+
+    steps:
+      - name: Install Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y git xz-utils
+
+      - name: Clone Android Common Kernel (4.14 Branch)
+        run: |
+          echo "Starting full clone of the android-4.14-stable branch..."
+          # ADDED --progress to force the progress meter to be displayed in the logs.
+          git clone --progress --branch=deprecated/android-4.14-stable https://android.googlesource.com/kernel/common/ android-kernel
+          
+      - name: Fetch All Tags
+        run: |
+          echo "Fetching all tags..."
+          cd android-kernel
+          git fetch --tags
+          cd ..
+
+      - name: Check Disk Usage After Clone
+        run: |
+          echo "Disk space usage after cloning:"
+          du -sh android-kernel
+
+      - name: Compress Kernel Source
+        run: |
+          echo "Starting compression..."
+          # ADDED v (verbose) flag to the tar command.
+          # This will print every file name as it is being archived.
+          # Expect a VERY large log output from this step.
+          tar -I 'xz -7 -T0' -cvf android-kernel-4.14.tar.xz android-kernel
+
+      - name: Check Final Archive Size
+        run: |
+          echo "Compression complete. Final archive size:"
+          ls -lh android-kernel-4.14.tar.xz
+
+      - name: Create GitHub Release and Upload Archive
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG=$(date +'%Y-%m-%d-%H%M')
+          
+          echo "Creating release with tag: $TAG"
+          gh release create "$TAG" \
+              --title "Android Kernel 4.14 Archive ($TAG)" \
+              --notes "Automated archive of the Android Common Kernel deprecated/android-4.14-stable branch with all tags. Compressed with tar.xz."
+
+          echo "Uploading archive to the release..."
+          # The GitHub CLI 'gh' command will show its own progress bar for the upload.
+          gh release upload "$TAG" android-kernel-4.14.tar.xz
+          
+      - name: Clean up runner disk space
+        if: always() # This step runs even if the previous steps fail
+        run: |
+          echo "Cleaning up large files..."
+          rm -rf android-kernel
+          rm -f android-kernel-4.14.tar.xz
