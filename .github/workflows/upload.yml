@@ -1,0 +1,57 @@
+name: Archive External Kernel
+
+# This allows you to run the workflow manually from the Actions tab
+on:
+  workflow_dispatch:
+
+jobs:
+  archive-and-release:
+    runs-on: ubuntu-latest
+    
+    # Permissions are required to create a release and upload assets
+    permissions:
+      contents: write
+
+    steps:
+      - name: Install Dependencies
+        run: |
+          # Ensure Git and compression tools are available
+          sudo apt-get update
+          sudo apt-get install -y git xz-utils
+
+      - name: Clone Android Common Kernel (4.14 Branch)
+        run: |
+          echo "Starting full clone of the android-4.14-stable branch..."
+          # Clone the specific branch with its full history. This is necessary for upstreaming.
+          # This step will take a long time (potentially 1-2 hours).
+          git clone --branch=deprecated/android-4.14-stable https://android.googlesource.com/kernel/common/ android-kernel
+          
+      - name: Fetch All Tags
+        run: |
+          echo "Fetching all tags..."
+          # Change directory into the kernel source and fetch all tags
+          cd android-kernel
+          git fetch --tags
+          cd ..
+
+      - name: Compress Kernel Source
+        run: |
+          echo "Starting compression..."
+          # Use tar with xz for high-level compression (-9e for extreme, T0 for all CPU cores)
+          # This will also take a significant amount of time.
+          tar -I 'xz -9e -T0' -cf android-kernel-4.14.tar.xz android-kernel
+
+      - name: Create GitHub Release and Upload Archive
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Generate a unique tag for the release based on the current date and time
+          TAG=$(date +'%Y-%m-%d-%H-%M-%S')
+          
+          echo "Creating release with tag: $TAG"
+          gh release create "$TAG" \
+              --title "Android Kernel 4.14 Archive ($TAG)" \
+              --notes "Automated archive of the Android Common Kernel deprecated/android-4.14-stable branch with all tags. Compressed with tar.xz."
+
+          echo "Uploading archive to the release..."
+          gh release upload "$TAG" android-kernel-4.14.tar.xz
